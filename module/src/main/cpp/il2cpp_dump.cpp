@@ -338,87 +338,143 @@ void il2cpp_api_init(void *handle) {
     il2cpp_thread_attach(domain);
 }
 
+bool is_protobuf_message(Il2CppClass* klass) {
+    void* iter = nullptr;
+    while (auto itf = il2cpp_class_get_interfaces(klass, &iter)) {
+        const char* interface_name = il2cpp_class_get_name(itf);
+        if (strcmp(interface_name, "IMessage`1") == 0 ||
+            strcmp(interface_name, "IMessage") == 0 ||
+            strcmp(interface_name, "IBufferMessage") == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+struct ProtoField {
+    std::string name;
+    std::string type;
+    int field_number;
+    bool is_repeated;
+};
+
+std::string map_il2cpp_type_to_proto(Il2CppType* type) {
+    switch (type->type) {
+        case IL2CPP_TYPE_BOOLEAN:
+            return "bool";
+        case IL2CPP_TYPE_CHAR:
+        case IL2CPP_TYPE_I1:
+        case IL2CPP_TYPE_U1:
+        case IL2CPP_TYPE_I2:
+        case IL2CPP_TYPE_U2:
+        case IL2CPP_TYPE_I4:
+        case IL2CPP_TYPE_U4:
+            return "int32";
+        case IL2CPP_TYPE_I8:
+        case IL2CPP_TYPE_U8:
+            return "int64";
+        case IL2CPP_TYPE_R4:
+            return "float";
+        case IL2CPP_TYPE_R8:
+            return "double";
+        case IL2CPP_TYPE_STRING:
+            return "string";
+        case IL2CPP_TYPE_CLASS:
+        case IL2CPP_TYPE_VALUETYPE: {
+            // For custom message types
+            Il2CppClass* klass = il2cpp_class_from_type(type);
+            return il2cpp_class_get_name(klass);
+        }
+        default:
+            return "UNKNOWN";
+    }
+}
+
+std::vector<ProtoField> get_protobuf_fields(Il2CppClass* klass) {
+    std::vector<ProtoField> fields;
+    void* iter = nullptr;
+    while (auto field = il2cpp_class_get_fields(klass, &iter)) {
+        auto attrs = il2cpp_field_get_flags(field);
+        const char* field_name = il2cpp_field_get_name(field);
+
+        // Check if the field is private and ends with '_'
+        if (!(attrs & FIELD_ATTRIBUTE_PUBLIC) && field_name[strlen(field_name) - 1] == '_') {
+            // Attempt to find the corresponding FieldNumber constant
+            std::string field_number_name = std::string(field_name, strlen(field_name) - 1) + "FieldNumber";
+            FieldInfo* field_number_field = il2cpp_class_get_field_from_name(klass, field_number_name.c_str());
+            if (field_number_field && (il2cpp_field_get_flags(field_number_field) & FIELD_ATTRIBUTE_STATIC)) {
+                // Get the field number value
+                int32_t field_number = 0;
+                il2cpp_field_static_get_value(field_number_field, &field_number);
+
+                // Get the field type
+                Il2CppType* field_type = il2cpp_field_get_type(field);
+                std::string proto_type = map_il2cpp_type_to_proto(field_type);
+
+                // Check if the field is a RepeatedField
+                bool is_repeated = false;
+                const char* type_name = il2cpp_type_get_name(field_type);
+                if (strstr(type_name, "RepeatedField`1")) {
+                    is_repeated = true;
+                }
+
+                // Add to fields vector
+                // Remove trailing '_' from field name
+                std::string clean_field_name = std::string(field_name, strlen(field_name) - 1);
+                fields.push_back({ clean_field_name, proto_type, field_number, is_repeated });
+            }
+        }
+    }
+    return fields;
+}
+
+void generate_proto(Il2CppClass* klass, const std::vector<ProtoField>& fields) {
+    std::stringstream proto_output;
+    proto_output << "syntax = \"proto3\";\n\n";
+    const char* ns = il2cpp_class_get_namespace(klass);
+    if (ns && strlen(ns) > 0) {
+        proto_output << "package " << ns << ";\n\n";
+    }
+    proto_output << "message " << il2cpp_class_get_name(klass) << " {\n";
+    for (const auto& field : fields) {
+        proto_output << "  ";
+        if (field.is_repeated) {
+            proto_output << "repeated ";
+        }
+        proto_output << field.type << " " << field.name << " = " << field.field_number << ";\n";
+    }
+    proto_output << "}\n";
+
+    // Write to file
+    std::string package_path = ns ? std::string(ns) : "";
+    std::replace(package_path.begin(), package_path.end(), '.', '/');
+    std::string output_dir = std::string("proto_output/") + package_path;
+    std::string filename = output_dir + "/" + il2cpp_class_get_name(klass) + ".proto";
+    // Ensure the directory exists
+    system(("mkdir -p \"" + output_dir + "\"").c_str());
+    std::ofstream outfile(filename);
+    outfile << proto_output.str();
+    outfile.close();
+}
+
 void il2cpp_dump(const char *outDir) {
     LOGI("dumping...");
     size_t size;
     auto domain = il2cpp_domain_get();
     auto assemblies = il2cpp_domain_get_assemblies(domain, &size);
-    std::stringstream imageOutput;
+
     for (int i = 0; i < size; ++i) {
         auto image = il2cpp_assembly_get_image(assemblies[i]);
-        imageOutput << "// Image " << i << ": " << il2cpp_image_get_name(image) << "\n";
-    }
-    std::vector<std::string> outPuts;
-    if (il2cpp_image_get_class) {
-        LOGI("Version greater than 2018.3");
-        //使用il2cpp_image_get_class
-        for (int i = 0; i < size; ++i) {
-            auto image = il2cpp_assembly_get_image(assemblies[i]);
-            std::stringstream imageStr;
-            imageStr << "\n// Dll : " << il2cpp_image_get_name(image);
-            auto classCount = il2cpp_image_get_class_count(image);
-            for (int j = 0; j < classCount; ++j) {
-                auto klass = il2cpp_image_get_class(image, j);
-                auto type = il2cpp_class_get_type(const_cast<Il2CppClass *>(klass));
-                //LOGD("type name : %s", il2cpp_type_get_name(type));
-                auto outPut = imageStr.str() + dump_type(type);
-                outPuts.push_back(outPut);
-            }
-        }
-    } else {
-        LOGI("Version less than 2018.3");
-        //使用反射
-        auto corlib = il2cpp_get_corlib();
-        auto assemblyClass = il2cpp_class_from_name(corlib, "System.Reflection", "Assembly");
-        auto assemblyLoad = il2cpp_class_get_method_from_name(assemblyClass, "Load", 1);
-        auto assemblyGetTypes = il2cpp_class_get_method_from_name(assemblyClass, "GetTypes", 0);
-        if (assemblyLoad && assemblyLoad->methodPointer) {
-            LOGI("Assembly::Load: %p", assemblyLoad->methodPointer);
-        } else {
-            LOGI("miss Assembly::Load");
-            return;
-        }
-        if (assemblyGetTypes && assemblyGetTypes->methodPointer) {
-            LOGI("Assembly::GetTypes: %p", assemblyGetTypes->methodPointer);
-        } else {
-            LOGI("miss Assembly::GetTypes");
-            return;
-        }
-        typedef void *(*Assembly_Load_ftn)(void *, Il2CppString *, void *);
-        typedef Il2CppArray *(*Assembly_GetTypes_ftn)(void *, void *);
-        for (int i = 0; i < size; ++i) {
-            auto image = il2cpp_assembly_get_image(assemblies[i]);
-            std::stringstream imageStr;
-            auto image_name = il2cpp_image_get_name(image);
-            imageStr << "\n// Dll : " << image_name;
-            //LOGD("image name : %s", image->name);
-            auto imageName = std::string(image_name);
-            auto pos = imageName.rfind('.');
-            auto imageNameNoExt = imageName.substr(0, pos);
-            auto assemblyFileName = il2cpp_string_new(imageNameNoExt.c_str());
-            auto reflectionAssembly = ((Assembly_Load_ftn) assemblyLoad->methodPointer)(nullptr,
-                                                                                        assemblyFileName,
-                                                                                        nullptr);
-            auto reflectionTypes = ((Assembly_GetTypes_ftn) assemblyGetTypes->methodPointer)(
-                    reflectionAssembly, nullptr);
-            auto items = reflectionTypes->vector;
-            for (int j = 0; j < reflectionTypes->max_length; ++j) {
-                auto klass = il2cpp_class_from_system_type((Il2CppReflectionType *) items[j]);
-                auto type = il2cpp_class_get_type(klass);
-                //LOGD("type name : %s", il2cpp_type_get_name(type));
-                auto outPut = imageStr.str() + dump_type(type);
-                outPuts.push_back(outPut);
+        auto classCount = il2cpp_image_get_class_count(image);
+        for (int j = 0; j < classCount; ++j) {
+            auto klass = il2cpp_image_get_class(image, j);
+            if (is_protobuf_message(const_cast<Il2CppClass*>(klass))) {
+                auto fields = get_protobuf_fields(const_cast<Il2CppClass*>(klass));
+                if (!fields.empty()) {
+                    generate_proto(const_cast<Il2CppClass*>(klass), fields);
+                }
             }
         }
     }
-    LOGI("write dump file");
-    auto outPath = std::string(outDir).append("/files/dump.cs");
-    std::ofstream outStream(outPath);
-    outStream << imageOutput.str();
-    auto count = outPuts.size();
-    for (int i = 0; i < count; ++i) {
-        outStream << outPuts[i];
-    }
-    outStream.close();
     LOGI("dump done!");
 }
