@@ -308,7 +308,7 @@ std::string dump_type(const Il2CppType *type) {
     }
     if (!extends.empty()) {
         outPut << " : " << extends[0];
-        for (int i = 1; i < extends.size(); ++i) {
+        for (size_t i = 1; i < extends.size(); ++i) {
             outPut << ", " << extends[i];
         }
     }
@@ -358,7 +358,7 @@ struct ProtoField {
     bool is_repeated;
 };
 
-std::string map_il2cpp_type_to_proto(Il2CppType* type) {
+std::string map_il2cpp_type_to_proto(const Il2CppType* type) {
     switch (type->type) {
         case IL2CPP_TYPE_BOOLEAN:
             return "bool";
@@ -408,7 +408,7 @@ std::vector<ProtoField> get_protobuf_fields(Il2CppClass* klass) {
                 il2cpp_field_static_get_value(field_number_field, &field_number);
 
                 // Get the field type
-                Il2CppType* field_type = il2cpp_field_get_type(field);
+                const Il2CppType* field_type = il2cpp_field_get_type(field);
                 std::string proto_type = map_il2cpp_type_to_proto(field_type);
 
                 // Check if the field is a RepeatedField
@@ -463,10 +463,10 @@ void il2cpp_dump(const char *outDir) {
     auto domain = il2cpp_domain_get();
     auto assemblies = il2cpp_domain_get_assemblies(domain, &size);
 
-    for (int i = 0; i < size; ++i) {
+    for (size_t i = 0; i < size; ++i) {
         auto image = il2cpp_assembly_get_image(assemblies[i]);
         auto classCount = il2cpp_image_get_class_count(image);
-        for (int j = 0; j < classCount; ++j) {
+        for (size_t j = 0; j < classCount; ++j) {
             auto klass = il2cpp_image_get_class(image, j);
             if (is_protobuf_message(const_cast<Il2CppClass*>(klass))) {
                 auto fields = get_protobuf_fields(const_cast<Il2CppClass*>(klass));
